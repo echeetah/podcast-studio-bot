@@ -1,0 +1,67 @@
+# секреты: токены, ключи API, api_id/api_hash Telegram, ключ Tailscale
+secrets/
+*.env
+*_key
+*_token
+ts_authkey
+*.pem
+*.key
+*.crt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# рабочие папки и данные выпусков (CLI) и аудио
+work_*/
+jobs/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.zip
+
+# системное
+.DS_Store
+
+# значения конкретной установки (шаблоны .env.example и settings.example.json — в репозитории)
+.env
+!.env.example
+settings.local.json
+BACKLOG.local.md
+*.local.*
+
+# локальные .env-варианты, настройки и состояние, если запускать из папки проекта
+.env.*
+!.env.example
+/settings.json
+state*.json
+ep*/
+/work*/
+*.log
+
+# ещё аудио/видео и архивы
+*.srt
+*.ogg
+*.aac
+*.opus
+*.mp4
+*.mov
+*.webm
+*.caf
+*.7z
+*.rar
+
+# редакторы
+.idea/
+.vscode/
+
+# отчёты аудитов (содержат данные конкретной установки)
+AUDIT*.md
+
+# шаблоны секретов публикуются (заглушки); настоящие — в secrets/
+!secrets.example/
+!secrets.example/**
+.pytest_cache/

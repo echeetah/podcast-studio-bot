@@ -1,0 +1,30 @@
+{
+  "podcast_name": "мой подкаст",
+  "spelling": {
+    "Мойподкаст": "мой подкаст"
+  },
+  "mic_profiles": {
+    "нейтральный": "",
+    "рекордер близко": "highpass=f=120:p=2,lowshelf=f=200:g=-5,equalizer=f=250:t=q:w=1:g=-2,equalizer=f=3500:t=q:w=1.2:g=4,highshelf=f=8000:g=3",
+    "рекордер 20 см": "highpass=f=85:p=2,equalizer=f=250:t=q:w=1:g=-2,equalizer=f=3500:t=q:w=1.2:g=2,highshelf=f=10000:g=1.5",
+    "телефон, сжатый": "equalizer=f=180:t=q:w=1:g=2,equalizer=f=3500:t=q:w=1:g=1",
+    "телефон, без потерь": "highpass=f=80:p=2,equalizer=f=300:t=q:w=1:g=-2,highshelf=f=10000:g=1"
+  },
+  "track_profile": [
+    "рекордер 20 см",
+    "телефон, без потерь"
+  ],
+  "comp_threshold_db": -10,
+  "comp_ratio": 3,
+  "deesser": false,
+  "dynaudnorm": false,
+  "denoise_nr": 8,
+  "feed_footer_html": "<p>Подписывайтесь на наш канал: <a href=\"https://t.me/example\">t.me/example</a></p>",
+  "feed_footnotes": {
+    "слово": "* сноска, если в описании или главах встретилось это слово"
+  },
+  "title_examples": [
+    "летний выпуск",
+    "разговор про сон"
+  ]
+}

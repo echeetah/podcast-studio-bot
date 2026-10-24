@@ -1,0 +1,59 @@
+# Подкаст-бот: две дорожки в Telegram → готовый выпуск. Значения установки — в .env (шаблон: .env.example).
+services:
+  telegram-bot-api:            # локальный Bot API: файлы до 2 ГБ (облачный — только 20 МБ)
+    image: aiogram/telegram-bot-api@sha256:8fc556e6ff63065ca344963000f3fdf04e75320b8f88a3b7fdd9268030750f84   # Bot API 10.3
+    restart: unless-stopped
+    env_file: ./secrets/telegram_api.env    # TELEGRAM_API_ID, TELEGRAM_API_HASH (my.telegram.org)
+    environment:
+      TELEGRAM_LOCAL: "1"
+    volumes:
+      - tgapi:/var/lib/telegram-bot-api
+
+  podcast-bot:
+    build: .
+    image: podcast-bot:local
+    restart: unless-stopped
+    depends_on: [telegram-bot-api]
+    # не root: uid 101 — тот же, под которым работает локальный Bot API (его файлы 0600 — иначе не прочитать),
+    # группа — группа хоста (HOST_GID), чтобы владелец сервера читал данные и секреты; прав ядра нет совсем
+    user: "101:${HOST_GID:-1000}"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      BOT_API: "http://telegram-bot-api:8081"
+      PEOPLE: "${PEOPLE}"                   # id:имя:часовой пояс через запятую; порядок = каналы A/B
+      PODCAST_NAME: "${PODCAST_NAME}"
+      START_N: "${START_N:-0}"              # последний вышедший выпуск
+      GRACE_SECONDS: "30"
+      REMIND_HOUR: "13"
+      PUBLISH_CHAT: "${PUBLISH_CHAT:-}"     # канал для публикации после одобрения обоих; пусто — не публиковать
+      WEBAPP_URL: "${WEBAPP_URL:-}"         # мини-приложение синхросигнала (узел Tailscale с Funnel); пусто — без него
+      FEED_URL: "${FEED_URL:-}"             # публичный адрес RSS-фида (обычно = WEBAPP_URL); пусто — без фида
+      KEEP_TRACKS_DAYS: "30"
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - ${DATA_DIR}:/data
+      - ./secrets:/secrets:ro
+      - tgapi:/var/lib/telegram-bot-api
+
+
+  podcast-tailscale:           # свой узел Tailscale: Funnel отдаёт наружу только мини-приложение синхросигнала
+    image: tailscale/tailscale:v1.102.5
+    hostname: ${TS_HOSTNAME:-podcast-pi}
+    restart: unless-stopped
+    depends_on: [podcast-bot]
+    environment:
+      # без ключа: при первом запуске в логах будет ссылка входа (docker compose logs podcast-tailscale);
+      # для входа по ключу: TS_AUTHKEY: "file:/secrets/ts_authkey" и том ./secrets/ts_authkey ниже
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_HOSTNAME: ${TS_HOSTNAME:-podcast-pi}
+      TS_AUTH_ONCE: "true"                     # уже вошли — не повторять tailscale up при каждом старте
+      TS_USERSPACE: "true"                     # без /dev/net/tun и прав NET_ADMIN
+      TS_SERVE_CONFIG: /config/serve.json      # https://<TS_HOSTNAME>.<tailnet>.ts.net/ → http://podcast-bot:8790
+    volumes:
+      - tsstate:/var/lib/tailscale
+      - ./tailscale/serve.json:/config/serve.json:ro
+
+volumes:
+  tgapi:
+  tsstate:

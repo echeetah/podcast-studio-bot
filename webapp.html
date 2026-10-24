@@ -1,0 +1,696 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Синхросигнал</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Doto:wght@800&family=Tiny5&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  /* Тема: светлая (Braun) или тёмная (TE) — по Telegram; дисплей прибора всегда тёмный. */
+  :root {
+    --bg: #e6e5e1; --panel: #f2f1ee; --ink: #111111; --ink2: #6b6b6b; --ink3: #a3a19c; --line: #cfcdc8;
+    --accent: #ff6a1a; --accent-ink: #111111; --key: #d9d7d2;
+    --disp: #0c0c0c; --dot-off: #1f1f1f; --dot-on: #ececec; --dot-hot: #ff6a1a;
+    --led-off: #bdbbb6; --led-on: #e8a33c; --led-ready: #ff6a1a;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0c0c0c; --panel: #141414; --ink: #ececec; --ink2: #8a8a8a; --ink3: #4a4a4a; --line: #2a2a2a;
+    --accent: #ff6a1a; --accent-ink: #0c0c0c; --key: #1d1d1d;
+    --disp: #050505; --dot-off: #161616; --led-off: #333333;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); }
+  body {
+    font: 12px/1.45 "JetBrains Mono", ui-monospace, Menlo, monospace; letter-spacing: .04em;
+    padding: 14px 16px 28px; max-width: 460px; margin: 0 auto;
+  }
+  .tiny { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink2); }
+
+  /* шапка: инвертированная плашка с именем модуля + служебные метки */
+  .head { display: flex; align-items: stretch; gap: 8px; margin-bottom: 10px; }
+  .plate { background: var(--ink); color: var(--bg); padding: 3px 8px; font-weight: 600; letter-spacing: .16em; }
+  .head .meta { flex: 1; display: flex; justify-content: space-between; align-items: center; gap: 8px; white-space: nowrap; border-bottom: 1px solid var(--line); }
+
+  /* точечный дисплей */
+  .display {
+    border-radius: 10px; padding: 26px 14px 12px; position: relative; overflow: hidden;   /* сверху — место под угловую метку */
+    background-color: var(--disp);
+    background-image: radial-gradient(var(--dot-off) 1.1px, transparent 1.3px); background-size: 6px 6px;
+  }
+  /* текст дисплея рисуется точками на холсте (dotText): пиксельный шрифт → по точке на пиксель */
+  .display canvas { display: block; }
+  /* высота строк зарезервирована по максимуму (7 рядов × шаг 9; строка часов — 5 рядов × шаг 3), чтобы дисплей не менял размер при старте */
+  .display .big { height: 63px; display: flex; align-items: flex-end; }
+  .display .row { height: 15px; display: flex; justify-content: space-between; align-items: flex-end; margin-top: 12px; }
+  .display .corner { position: absolute; top: 8px; right: 10px; font-size: 9px; color: #5a5a5a; letter-spacing: .16em; }
+  .blink { animation: blink 1s steps(2, start) infinite; }
+  @keyframes blink { to { visibility: hidden; } }
+
+  /* ведущие: строка = светодиод + имя + статус + метки сигналов (начало / конец) */
+  .hosts { margin: 12px 0 4px; border-top: 1px solid var(--line); }
+  .host { display: grid; grid-template-columns: 16px 1fr auto; align-items: center; gap: 10px;
+    padding: 9px 2px; border-bottom: 1px solid var(--line); }
+  .led { width: 10px; height: 10px; border-radius: 50%; background: var(--led-off); }
+  .led.on { background: var(--led-on); }
+  .led.ready { background: var(--led-ready); box-shadow: 0 0 0 3px rgba(255,106,26,.18); }
+  .host .nm { font-weight: 600; text-transform: uppercase; letter-spacing: .14em; }
+  .host .st { color: var(--ink2); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+  .pips { display: flex; gap: 4px; align-items: center; }
+  .pip { width: 18px; height: 6px; border: 1px solid var(--ink3); }
+  .pip.on { background: var(--accent); border-color: var(--accent); }
+
+  /* клавиши: плоские, без теней; цвет = назначение (оранжевая — сигнал) */
+  .keys { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 14px 0 8px; }
+  .key {
+    appearance: none; border: 0; border-radius: 8px; background: var(--key); color: var(--ink);
+    font: 600 11px "JetBrains Mono", monospace; letter-spacing: .14em; text-transform: uppercase;
+    padding: 14px 10px; display: flex; justify-content: space-between; align-items: center; min-height: 52px;
+  }
+  .key .glyph { font-size: 16px; letter-spacing: 0; }
+  .key.lit { background: var(--ink); color: var(--bg); }
+  .key:active { transform: translateY(1px); }
+  .key:disabled { opacity: .45; }
+  .key.lit:disabled { opacity: 1; }
+  .fire {
+    grid-column: 1 / -1; background: var(--accent); color: var(--accent-ink); min-height: 74px; padding: 14px 16px;
+    font-size: 13px; text-align: left;
+  }
+  .fire .sub { display: block; font-size: 9px; letter-spacing: .16em; opacity: .7; margin-top: 3px; }
+  .fire .glyph { font-family: "Doto", monospace; font-weight: 800; font-size: 34px; }
+  .fire:disabled { background: var(--key); color: var(--ink2); opacity: 1; }
+
+  /* микрографика: виджеты с настоящими данными */
+  .grid { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); border-left: 1px solid var(--line); margin-top: 12px; }
+  .cell { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 8px 9px 9px; position: relative; min-height: 74px; }
+  .cell .t { font-size: 9px; letter-spacing: .16em; color: var(--ink2); text-transform: uppercase; display: flex; justify-content: space-between; }
+  .cell .v { font-family: "Doto", monospace; font-weight: 800; font-size: 22px; line-height: 1.15; margin-top: 4px; }
+  .cell .l { font-size: 10px; color: var(--ink2); letter-spacing: .06em; }
+  .cell .plus { position: absolute; width: 7px; height: 7px; }
+  .cell .plus::before, .cell .plus::after { content: ""; position: absolute; background: var(--ink3); }
+  .cell .plus::before { left: 3px; top: 0; width: 1px; height: 7px; }
+  .cell .plus::after { top: 3px; left: 0; width: 7px; height: 1px; }
+  .barcode { display: flex; align-items: flex-end; height: 26px; margin-top: 6px; }
+  .barcode i { display: block; height: 100%; background: var(--ink); }
+  .capsule { display: inline-block; border: 1px solid var(--ink2); border-radius: 99px; padding: 0 7px; font-size: 9px; letter-spacing: .16em; }
+  .capsule.hot { border-color: var(--accent); color: var(--accent); }
+
+  .steps { margin-top: 14px; border: 1px solid var(--line); padding: 10px 12px; }
+  .steps ol { margin: 6px 0 0; padding-left: 0; list-style: none; counter-reset: s; }
+  .steps li { counter-increment: s; display: grid; grid-template-columns: 26px 1fr; padding: 3px 0; text-transform: uppercase; letter-spacing: .08em; font-size: 10.5px; }
+  .steps li::before { content: "0" counter(s); color: var(--accent); font-weight: 600; }
+  .hazard { margin-top: 10px; display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: stretch; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink2); }
+  .hazard .stripe { background: repeating-linear-gradient(-45deg, var(--accent) 0 4px, transparent 4px 8px); }
+
+  .log { margin-top: 14px; }
+  .log .r { display: grid; grid-template-columns: 64px 1fr auto; gap: 8px; padding: 5px 0; border-bottom: 1px dashed var(--line); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; }
+  .log .r .ok { color: var(--accent); }
+  .foot { display: flex; justify-content: space-between; margin-top: 16px; font-size: 9px; letter-spacing: .16em; color: var(--ink3); text-transform: uppercase; }
+
+  #denied { display: none; }
+
+  /* вкладки: та же инвертированная плашка, неактивная — контуром */
+  .tabs { display: flex; }
+  .tab { appearance: none; border: 1px solid var(--ink); background: transparent; color: var(--ink); cursor: pointer;
+    font: 600 12px "JetBrains Mono", monospace; letter-spacing: .16em; padding: 3px 8px; }
+  .tab + .tab { border-left: 0; }
+  .tab.on { background: var(--ink); color: var(--bg); }
+  .tab .cnt { color: var(--accent); }
+
+  /* таймер записи: от первого сигнала «начало» до второго «конец»; минуты текущего часа — шкалой */
+  .rec { border: 1px solid var(--line); margin-top: 10px; padding: 8px 9px 9px; position: relative; }
+  .rec .t { font-size: 9px; letter-spacing: .16em; color: var(--ink2); text-transform: uppercase; display: flex; justify-content: space-between; }
+  .rec .t .hot { color: var(--accent); }
+  .rec .v { font-family: "Doto", monospace; font-weight: 800; font-size: 34px; line-height: 1.1; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .rec .l { font-size: 10px; color: var(--ink2); letter-spacing: .06em; text-transform: uppercase; }
+  .ticks { display: grid; grid-template-columns: repeat(60, 1fr); gap: 1px; height: 10px; align-items: end; margin: 6px 0 5px; }
+  .ticks i { display: block; height: 5px; background: var(--line); }
+  .ticks i.ten { height: 10px; }
+  .ticks i.on { background: var(--ink); }
+  .ticks i.now { background: var(--accent); }
+
+  /* темы */
+  .tsum { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 10px; border-bottom: 1px solid var(--line); padding: 2px 0 8px; }
+  .tsum span:last-child { color: var(--accent); }
+  .sec { display: flex; justify-content: space-between; margin: 18px 0 2px; padding-bottom: 4px; border-bottom: 1px solid var(--ink); }
+  .topic { position: relative; padding: 10px 0 12px 12px; border-bottom: 1px solid var(--line); }
+  .topic::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 12px; width: 3px; background: var(--line); }
+  .topic.need::before { background: repeating-linear-gradient(-45deg, var(--accent) 0 3px, transparent 3px 6px); }
+  .topic .hd { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .tag { appearance: none; border: 0; background: none; color: var(--ink); cursor: pointer; padding: 0; white-space: nowrap;
+    font: 600 10px "JetBrains Mono", monospace; letter-spacing: .14em; }
+  .topic .tx { font-size: 12.5px; line-height: 1.5; letter-spacing: .02em; white-space: pre-wrap; word-break: break-word; margin: 6px 0 8px; }
+  .topic .who { margin-bottom: 8px; }
+  .topic .who b { color: var(--ink); font-weight: 600; }
+  .topic .who b.hot { color: var(--accent); }
+  .vk3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .key.sm { min-height: 36px; padding: 8px 10px; font-size: 10px; justify-content: center; }
+  .key.sm.hot { background: var(--accent); color: var(--accent-ink); }
+  .acts { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+  .acts .key.sm { flex: 1; }
+  .acts .del { flex: 0 0 auto; background: transparent; border: 1px solid var(--line); color: var(--ink2); }
+  .empty { margin-top: 18px; border: 1px dashed var(--line); padding: 18px 12px; text-align: center; }
+
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="head">
+    <div class="tabs"><button class="tab on" data-tab="sync">СИНХРО</button><button class="tab" data-tab="topics">ТЕМЫ<span class="cnt" id="tcnt"></span></button></div>
+    <div class="meta"><span class="tiny" id="ep">ВЫП.—</span><span class="tiny">[ РЕВ 6 ]</span></div>
+  </div>
+
+  <div id="vSync">
+  <div class="display">
+    <div class="corner">СВИСТ // 0,6 С</div>
+    <div class="big"><canvas id="dbig" width="0" height="0"></canvas></div>
+    <div class="row"><canvas id="dclk" width="0" height="0"></canvas><canvas id="dnet" width="0" height="0"></canvas></div>
+  </div>
+
+  <div class="rec">
+    <div class="t"><span id="recN">Запись</span><span id="recSt">[ ЖДЁТ СИГНАЛА ]</span></div>
+    <div class="v" id="recT">--:--:--</div>
+    <div class="ticks" id="recTicks"></div>
+    <div class="l" id="recL">Таймер пойдёт с первого сигнала «начало»</div>
+  </div>
+
+  <div class="hosts" id="hosts"></div>
+
+  <div class="keys">
+    <button class="key" id="ready" disabled><span>Готов?</span><span class="glyph">○</span></button>
+    <button class="key" id="test"><span>Проверить звук</span><span class="glyph">♪</span></button>
+    <button class="key fire" id="fire" disabled>
+      <span><span id="fireText">Сигнал</span><span class="sub" id="fireSub">сначала нажми «Готов»</span></span>
+      <span class="glyph">◉</span>
+    </button>
+  </div>
+  <div class="tiny" id="note" style="min-height:14px"></div>
+
+  <div class="grid">
+    <div class="cell"><span class="plus" style="right:6px;bottom:6px"></span>
+      <div class="t"><span>Выпуск</span><span id="capsule" class="capsule">( ЖДЁМ )</span></div>
+      <div class="v" id="gEp">—</div>
+      <div class="barcode" id="barcode"></div>
+    </div>
+    <div class="cell">
+      <div class="t"><span>Свист</span><span>[ ПЕРЕДАЧА ]</span></div>
+      <div class="v">0.6</div>
+      <div class="l">СЕКУНДЫ · 800 → 3200 ГЦ<br>ЗАПАС 2000 МС · ГРОМК. 0,9</div>
+    </div>
+    <div class="cell">
+      <div class="t"><span>Часы</span><span>// NTP·HTTP</span></div>
+      <div class="v" id="gOff">—</div>
+      <div class="l" id="gClk">СМЕЩЕНИЕ, МС<br>ЗАМЕРОВ —</div>
+    </div>
+    <div class="cell"><span class="plus" style="right:6px;bottom:6px"></span>
+      <div class="t"><span>Звук</span><span id="gState">ВЫКЛ</span></div>
+      <div class="v" id="gLat">—</div>
+      <div class="l" id="gSr">ЗАДЕРЖКА ВЫВОДА, МС<br>ЧАСТОТА —</div>
+    </div>
+  </div>
+
+  <div class="steps">
+    <div class="tiny">Порядок</div>
+    <ol>
+      <li>Оба открывают «Синхро», проверяют звук и жмут «Готов» / «Готова»</li>
+      <li>Звук — на динамик, рядом с микрофоном. Включите запись</li>
+      <li>Сигнал в начале — и ещё раз в конце</li>
+    </ol>
+  </div>
+  <div class="hazard"><span class="stripe"></span><span>Пишешь в Диктофон на этом iPhone? Запускай «Синхро» с другого устройства — iOS может остановить запись ради звука.</span></div>
+
+  <div class="log" id="log"></div>
+  </div>
+
+  <div id="vTopics" hidden>
+    <div class="tsum tiny" id="tsum"><span>—</span><span></span></div>
+    <div id="tlist"></div>
+  </div>
+  <div class="foot"><span>Подкаст-бот · синхро</span><span id="footT">Т+00:00</span></div>
+</div>
+
+<div id="denied">
+  <div class="head"><div class="plate">СИНХРО</div><div class="meta"><span class="tiny">[ ЗАКРЫТО ]</span><span class="tiny">ОШ 403</span></div></div>
+  <div class="display"><div class="big"><canvas id="dden" width="0" height="0"></canvas></div><div class="row"><canvas id="dden2" width="0" height="0"></canvas></div></div>
+</div>
+
+<script>
+// Параметры сигнала — те же, что CHIRP в podcast.py (там его ищут в записях).
+const CHIRP = {f0: 800, f1: 3200, dur: 0.6};
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+const initData = tg ? tg.initData : "";
+const qs = new URLSearchParams(location.search);
+// ?demo без подписи Telegram — показ дизайна на подставных данных (к боту не обращается)
+const DEMO = !initData && qs.has("demo");
+const sysTheme = (tg && tg.initData && tg.colorScheme) || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+document.documentElement.dataset.theme = qs.get("theme") || sysTheme;
+
+const $ = (id) => document.getElementById(id);
+const nowLocal = () => performance.timeOrigin + performance.now();
+const escHtml = (t) => String(t).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+let offset = null, err = null, rttMin = null;   // часы сервера = часы устройства + offset (мс); err — разброс лучших замеров
+let ctx = null;                                   // AudioContext: создаётся первым нажатием (без нажатия браузер не даст звук)
+let ready = false;                                // нажал «Ready» — общий сигнал играет и здесь
+const played = new Set(), samples = [];
+const t0 = Date.now();
+let lastMark = null, me = null, meP = {};
+const g = (p, m, f) => (p && p.f ? f : m);              // род для «готов / готова»
+
+// Сессия: подпись initData живёт час, а «Синхро» держат открытым всю запись → бот выдаёт токен (12 ч),
+// он продлевается каждым ping и переживает перезагрузку страницы (sessionStorage).
+let token = null;
+try { token = sessionStorage.getItem("podsync.token"); } catch (e) {}
+let lastOk = 0, everOk = false;
+
+const DEMO_T0 = Date.now();
+const demo = {ready2: false, marks: [0, 0], fire: null, tv: 1, topics: [
+  {id: 1, text: "Летающие машины: где они, обещали же к 2020-му", by: 1, at: DEMO_T0 / 1000 - 86400 * 2, kind: "topic", votes: {"1": "fire", "2": "fire"}, status: "next", n: null},
+  {id: 2, text: "Как каждый из нас выбирает книги — и почему бросает на середине", by: 2, at: DEMO_T0 / 1000 - 86400, kind: "topic", votes: {"2": "ok"}, status: "open", n: null},
+  {id: 3, text: "ссылка: статья про сон и экраны", by: 2, at: DEMO_T0 / 1000 - 3600, kind: "note", votes: {}, status: "open", n: null},
+  {id: 4, text: "Переезд в другой город — год спустя", by: 1, at: DEMO_T0 / 1000 - 86400 * 9, kind: "topic", votes: {"1": "fire", "2": "ok"}, status: "done", n: 31}]};
+function demoApi(op, extra) {
+  const t = demo.topics.find(x => x.id === extra.id);
+  if (op === "vote") { if (extra.v) t.votes["1"] = extra.v; else delete t.votes["1"]; }
+  if (op === "kind") t.kind = extra.kind;
+  if (op === "status") { t.status = extra.status; t.n = extra.status === "done" ? 31 : null; }
+  if (op === "tdel") demo.topics.splice(demo.topics.indexOf(t), 1);
+  if (op !== "topics") demo.tv++;
+  return {ok: true, topics: JSON.parse(JSON.stringify(demo.topics)), tv: demo.tv};
+}
+async function api(op, extra = {}) {
+  if (DEMO) {
+    if (["topics", "vote", "kind", "status", "tdel"].includes(op)) return demoApi(op, extra);
+    if (op === "fire") demo.fire = {T: nowLocal() + (offset || 0) + 2000, by: "Аня"};
+    if (op === "mark") { demo.marks[0]++; demo.marks[1]++; const k = demo.marks[0]; return {ok: true, n: 31, k, which: k === 1 ? "начало" : "конец"}; }
+    if (Date.now() - t0 > 4000) demo.ready2 = true;
+    const recStart = DEMO_T0 - 42 * 60000 - 13000;
+    return {me: 1, n: 32, fire: demo.fire, tv: demo.tv, rec: {n: 32, start: recStart, end: null}, people: [
+      {id: 1, name: "Аня", f: true, online: true, ready, err: err == null ? null : Math.round(err), marks: demo.marks[0]},
+      {id: 2, name: "Боря", online: true, ready: demo.ready2, err: 5, marks: demo.marks[1]}]};
+  }
+  const r = await fetch("api", {method: "POST", headers: {"content-type": "application/json"},
+    body: JSON.stringify({initData, token, op, err: err == null ? null : Math.round(err), rtt: rttMin == null ? null : Math.round(rttMin),
+                          ready, ...extra})});
+  if (r.status === 403) {
+    if (everOk) throw new Error("expired");             // были в сети, но подпись и токен устарели — просим переоткрыть
+    $("app").style.display = "none"; $("denied").style.display = "block"; drawDenied(); throw new Error("denied");
+  }
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const j = await r.json();
+  if (j.token) { token = j.token; try { sessionStorage.setItem("podsync.token", token); } catch (e) {} }
+  lastOk = Date.now(); everOk = true;
+  return j;
+}
+
+async function syncClock(n = 10) {
+  // NTP по HTTP: «вопрос-ответ»; замеры копятся 10 минут; берём быстрые, их разброс — реальная точность сверки
+  for (let i = 0; i < n; i++) {
+    const a = nowLocal();
+    let t;
+    if (DEMO) { await new Promise(r => setTimeout(r, 40 + Math.random() * 60)); t = nowLocal() - 20 + 12.4; }
+    else { const r = await fetch("time?_=" + Math.random(), {cache: "no-store"}); t = (await r.json()).t; }
+    const b = nowLocal();
+    samples.push({at: b, rtt: b - a, off: t - (a + b) / 2});
+    if (i < n - 1) await new Promise(r => setTimeout(r, 120));
+  }
+  const fresh = samples.filter(x => nowLocal() - x.at < 600000);
+  samples.splice(0, samples.length, ...fresh);
+  const best = fresh.reduce((x, y) => (y.rtt < x.rtt ? y : x));
+  const good = fresh.filter(x => x.rtt <= best.rtt * 1.3 + 15).map(x => x.off).sort((x, y) => x - y);
+  offset = good[Math.floor(good.length / 2)];
+  rttMin = best.rtt;
+  err = Math.max(3, (good[good.length - 1] - good[0]) / 2);
+}
+
+async function ensureAudio() {
+  // первое нажатие создаёт звук; iOS: режим «как у плеера» — не глушится переключателем «бесшумно»
+  try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
+  if (!ctx) {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const b = ctx.createBuffer(1, 1, ctx.sampleRate), s = ctx.createBufferSource();   // «разблокировка» на iOS
+    s.buffer = b; s.connect(ctx.destination); s.start();
+  }
+  return wakeAudio();
+}
+
+async function wakeAudio() {
+  // после сворачивания Telegram звук «засыпает» — будим перед каждым звуком
+  try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
+  if (ctx && ctx.state !== "running") { try { await ctx.resume(); } catch (e) {} }
+  return !!ctx && ctx.state === "running";
+}
+
+function chirpBuffer() {
+  const sr = ctx.sampleRate, n = Math.round(CHIRP.dur * sr);
+  const buf = ctx.createBuffer(1, n, sr), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    const ph = 2 * Math.PI * (CHIRP.f0 * t + (CHIRP.f1 - CHIRP.f0) * t * t / (2 * CHIRP.dur));
+    d[i] = 0.9 * Math.sin(ph) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1)));   // окно Ханна
+  }
+  return buf;
+}
+
+// Точечный дисплей: текст рисуется узким пиксельным шрифтом Tiny5 (есть кириллица; при 8 px — пиксель = 1 px)
+// на скрытом холсте, и каждый закрашенный пиксель выводится точкой. Так дисплей «точечный» на любом языке.
+const DOT_FONT = "8px 'Tiny5'";
+const dotCache = {};
+// rows = [верхний ряд, высота] и cols — фиксированная «рамка» в пикселях шрифта: тогда размер холста не зависит
+// от текста (крупная строка не прыгает при смене состояний и мигании)
+function glyphBox(text) {
+  const o = document.createElement("canvas").getContext("2d");
+  o.font = DOT_FONT;
+  const w = Math.max(1, Math.ceil(o.measureText(text).width)), H = 12;
+  o.canvas.width = w; o.canvas.height = H; o.font = DOT_FONT; o.fillText(text, 0, 9);
+  const raw = o.getImageData(0, 0, w, H).data;
+  let top = H, bot = -1;
+  for (let y = 0; y < H; y++) for (let x = 0; x < w; x++) if (raw[(y * w + x) * 4 + 3] > 110) { top = Math.min(top, y); bot = Math.max(bot, y); }
+  return {w, top, bot};
+}
+function dotText(canvas, text, {pitch = 4, color = "#ececec", glow = 0, maxWidth = 0, rows = null, cols = 0} = {}) {
+  const off = document.createElement("canvas"), o = off.getContext("2d");
+  o.font = DOT_FONT;
+  const w = Math.max(1, Math.ceil(o.measureText(text).width)), H = 12;
+  off.width = w; off.height = H;
+  o.font = DOT_FONT; o.textBaseline = "alphabetic"; o.fillStyle = "#000";
+  o.fillText(text, 0, 9);
+  const raw = o.getImageData(0, 0, w, H).data;
+  // обрезать пустые ряды сверху и снизу — высота дисплея по буквам, а не по шрифту
+  const on = (x, y) => raw[(y * w + x) * 4 + 3] > 110;
+  let top = 0, bot = H - 1;
+  if (rows) { top = rows[0]; bot = rows[0] + rows[1] - 1; } else {
+    while (top < H - 1 && ![...Array(w).keys()].some(x => on(x, top))) top++;
+    while (bot > top && ![...Array(w).keys()].some(x => on(x, bot))) bot--;
+  }
+  const h = Math.max(1, bot - top + 1);
+  if (maxWidth && !cols) pitch = Math.max(2, Math.min(pitch, Math.floor(maxWidth / w)));
+  const a = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) a[(y * w + x) * 4 + 3] = on(x, y + top) ? 255 : 0;
+  const dpr = window.devicePixelRatio || 1, cw = Math.max(cols, w);
+  canvas.width = cw * pitch * dpr; canvas.height = h * pitch * dpr;
+  canvas.style.width = cw * pitch + "px"; canvas.style.height = h * pitch + "px";
+  const c = canvas.getContext("2d");
+  c.scale(dpr, dpr);
+  c.fillStyle = color;
+  if (glow) { c.shadowColor = color; c.shadowBlur = glow; }
+  const r = pitch * 0.38;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (a[(y * w + x) * 4 + 3] > 110) { c.beginPath(); c.arc(x * pitch + pitch / 2, y * pitch + pitch / 2, r, 0, 7); c.fill(); }
+  }
+}
+
+// все тексты крупной строки: по самому широкому — шаг точек, по всем вместе — ряды (Ё, Й выше остальных)
+const BIG_TEXTS = ["● СИГНАЛ", "СВЕРКА…", "ГОТОВ?", "ГОТОВА?", "ВЗВЕДЁН", "ЖДЁМ…", "МЕТКА 10", "ОФЛАЙН"];
+let bigBox = null;
+function bigLayout() {
+  const bs = BIG_TEXTS.map(glyphBox), cols = Math.max(...bs.map(b => b.w));
+  const top = Math.min(...bs.map(b => b.top)), bot = Math.max(...bs.map(b => b.bot));
+  const width = $("dbig").parentElement.clientWidth - 4;
+  return {cols, width, rows: [top, bot - top + 1], pitch: Math.max(2, Math.min(9, Math.floor(width / cols)))};
+}
+let txUntil = 0, blinkOn = true, shown = ["", false, false];
+function show(text, hot = false, blink = false) {
+  shown = [text, hot, blink];
+  const vis = !blink || blinkOn;
+  const key = text + hot + vis;
+  if (dotCache.big === key && bigBox && bigBox.width === $("dbig").parentElement.clientWidth - 4) return;
+  dotCache.big = key;
+  const width = $("dbig").parentElement.clientWidth - 4;
+  if (width <= 0) { dotCache.big = null; return; }          // ещё не на экране — нарисуем при следующем show()
+  if (!bigBox || bigBox.width !== width) bigBox = bigLayout();
+  dotText($("dbig"), text, {pitch: bigBox.pitch, rows: bigBox.rows, cols: bigBox.cols,
+                            color: vis ? (hot ? "#ff6a1a" : "#ececec") : "rgba(0,0,0,0)", glow: vis ? (hot ? 6 : 3) : 0});
+}
+function showRow(id, text, color = "#9a9a9a") {
+  if (dotCache[id] === text) return;
+  dotCache[id] = text;
+  dotText($(id), text, {pitch: 3, color, maxWidth: $(id).parentElement.clientWidth - 2});
+}
+setInterval(() => { blinkOn = !blinkOn; if (shown[2]) show(...shown); }, 500);
+window.addEventListener("resize", () => { if (shown[0]) show(...shown); });
+
+async function playAt(T, by) {
+  // T — момент по часам сервера (мс) → шкала AudioContext с поправкой на задержку вывода звука
+  played.add(T);
+  if (!(await wakeAudio())) { addLog("ЗВУК", `УСНУЛ — НАЖМИ «${g(meP, "ГОТОВ", "ГОТОВА")}»`, false); ctx = null; ready = false; return; }
+  const targetPerf = T - offset - performance.timeOrigin;
+  if (targetPerf < performance.now() + 50) { addLog("СИГНАЛ", `ОТ ${by} ПРИШЁЛ ПОЗДНО — ЕЩЁ РАЗ`, false); return; }
+  const ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : {contextTime: ctx.currentTime, performanceTime: performance.now()};
+  const outLat = ctx.outputLatency || ctx.baseLatency || 0;
+  const src = ctx.createBufferSource();
+  src.buffer = chirpBuffer();
+  src.connect(ctx.destination);
+  src.start(ts.contextTime + (targetPerf - ts.performanceTime) / 1000 - outLat);
+  txUntil = performance.now() + (targetPerf - performance.now()) + CHIRP.dur * 1000 + 300;
+  show("● СИГНАЛ", true, true);
+  await new Promise(r => setTimeout(r, targetPerf - performance.now() + CHIRP.dur * 1000 + 150));
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+  let j = {};
+  try { j = await api("mark", {t: T, lat: Math.round(outLat * 1000)}); } catch (e) { j = {ok: false, error: String(e)}; }
+  const time = new Date(T - offset).toLocaleTimeString("ru-RU");
+  if (j.ok) { lastMark = `МЕТКА ${j.k}`; addLog(time, `ВЫП.${String(j.n).padStart(3, "0")} · МЕТКА ${j.k} · ${String(j.which).toUpperCase()}`, true); }
+  else addLog(time, "НЕ ЗАПИСАН · " + (j.error || ""), false);
+}
+
+function addLog(t, what, ok) {
+  const d = document.createElement("div");
+  d.className = "r";
+  d.innerHTML = `<span>${escHtml(t)}</span><span>${escHtml(what)}</span><span class="${ok ? "ok" : ""}">${ok ? "ОК" : "—"}</span>`;
+  $("log").prepend(d);
+}
+
+function barcode(code) {
+  // штрихкод из настоящей строки выпуска: каждый символ → 3 полосы разной ширины (детерминированно)
+  const bars = [];
+  for (const ch of code) { const c = ch.charCodeAt(0); bars.push(1 + (c % 3), 1 + ((c >> 2) % 2), 1 + ((c >> 3) % 3)); }
+  $("barcode").innerHTML = bars.map((w, i) => `<i style="width:${w * 2}px;margin-right:${i % 2 ? 2 : 1}px"></i>`).join("");
+}
+
+function render(st) {
+  me = st.me;
+  const pk = me + "|" + st.people.map(p => p.id + p.name).join(",");
+  people = st.people;
+  rec = st.rec || null;
+  if (st.tv !== undefined && st.tv !== tv) loadTopics();
+  else if (pk !== peopleKey) renderTopics();              // имена и «мой голос» известны только после первого ping
+  peopleKey = pk;
+  $("note").textContent = "";
+  const n = st.n ? String(st.n).padStart(3, "0") : "—";
+  $("ep").textContent = `ВЫП.${n}`;
+  $("gEp").textContent = n;
+  barcode(`EP${n}`);
+  meP = st.people.find(p => p.id === me) || {};
+  const mine = meP.marks || 0;
+  const allReady = st.people.every(p => p.ready);
+  $("hosts").innerHTML = st.people.map(p => {
+    const led = p.ready ? "ready" : p.online ? "on" : "";
+    const status = p.ready ? `${g(p, "готов", "готова")} · часы ±${p.err ?? "?"} мс` : p.online ? `в сети · ${g(p, "не готов", "не готова")}` : "не в сети";
+    const pips = [0, 1].map(i => `<span class="pip ${p.marks > i ? "on" : ""}"></span>`).join("");
+    return `<div class="host"><span class="led ${led}"></span><span><div class="nm">${escHtml(p.name)}${p.id === me ? " · ты" : ""}</div>` +
+           `<div class="st">${escHtml(status)}</div></span><span class="pips" title="начало / конец">${pips}</span></div>`;
+  }).join("");
+
+  showRow("dclk", "ЧАСЫ " + (err == null ? "—" : `±${Math.round(err)}МС`));
+  showRow("dnet", "СЕТЬ " + (rttMin == null ? "—" : `${Math.round(rttMin)}МС`));
+  $("gOff").textContent = offset == null ? "—" : `${offset >= 0 ? "+" : ""}${offset.toFixed(1)}`;
+  $("gClk").innerHTML = `СМЕЩЕНИЕ, МС · ±${err == null ? "—" : Math.round(err)}<br>ЗАМЕРОВ ${samples.length} / 10 МИН`;
+  $("gState").textContent = !ctx ? "ВЫКЛ" : ctx.state === "running" ? "РАБОТАЕТ" : "СПИТ";
+  $("gLat").textContent = ctx ? `${Math.round((ctx.outputLatency || ctx.baseLatency || 0) * 1000)}` : "—";
+  $("gSr").innerHTML = `ЗАДЕРЖКА ВЫВОДА, МС<br>ЧАСТОТА ${ctx ? ctx.sampleRate : "—"}`;
+
+  const rk = $("ready");
+  rk.disabled = offset == null || ready;
+  rk.classList.toggle("lit", ready);
+  rk.querySelector(".glyph").textContent = ready ? "●" : "○";
+  rk.firstElementChild.textContent = g(meP, "Готов", "Готова") + (ready ? "" : "?");
+
+  $("fire").disabled = !ready;
+  $("fireText").textContent = (allReady ? "Сигнал обоим" : "Сигнал") + (mine === 0 ? " · начало" : mine === 1 ? " · конец" : "");
+  const notReady = st.people.filter(p => !p.ready && p.id !== me);
+  $("fireSub").textContent = !ready ? `сначала нажми «${g(meP, "Готов", "Готова")}»` : allReady ? "прозвучит у обоих через 2 с"
+    : `${notReady.map(p => p.name).join(", ")} ${notReady.length === 1 ? g(notReady[0], "не готов", "не готова") : "не готовы"} — прозвучит только здесь`;
+  $("capsule").textContent = allReady ? "( ВЗВЕДЁН )" : ready ? `( ${g(meP, "ГОТОВ", "ГОТОВА")} )` : "( ЖДЁМ )";
+  $("capsule").className = "capsule" + (allReady ? " hot" : "");
+
+  if (performance.now() > txUntil) {
+    if (offset == null) show("СВЕРКА…", false, true);
+    else if (!ready) show(g(meP, "ГОТОВ?", "ГОТОВА?"));
+    else if (allReady) show(lastMark || "ВЗВЕДЁН", true);
+    else show("ЖДЁМ…", false, true);
+  }
+  if (st.fire && ready && ctx && !played.has(st.fire.T)) playAt(st.fire.T, st.fire.by);
+}
+
+async function loop() {
+  for (;;) {
+    try { render(await api("ping")); } catch (e) {
+      if (String(e).includes("denied")) return;
+      offline(String(e).includes("expired") ? "сессия истекла — закрой «Синхро» и открой снова из меню бота"
+                                            : "нет связи с ботом — повторяю… метки и таймер сохранятся");
+    }
+    const s = Math.floor((Date.now() - t0) / 1000);
+    $("footT").textContent = `Т+${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    await new Promise(r => setTimeout(r, 700));
+  }
+}
+
+$("ready").addEventListener("click", async () => {
+  ready = await ensureAudio();
+  if (!ready) addLog("ЗВУК", `НЕ ВКЛЮЧИЛСЯ (${ctx && ctx.state}) — НАЖМИ ЕЩЁ`, false);
+  try { render(await api("ping")); } catch (e) {}
+});
+
+$("test").addEventListener("click", async () => {
+  // проверка громкости: свист сразу, только здесь, без отметки — лучше до начала записи
+  const ok = await ensureAudio();
+  if (!ok) { addLog("ЗВУК", `НЕ РАБОТАЕТ (${ctx && ctx.state})`, false); ctx = null; ready = false; return; }
+  const src = ctx.createBufferSource();
+  src.buffer = chirpBuffer();
+  src.connect(ctx.destination);
+  src.start(ctx.currentTime + 0.05);
+  addLog(new Date().toLocaleTimeString("ru-RU"), "ПРОВЕРКА ЗВУКА · НЕ ЗАПИСАНА", true);
+});
+
+$("fire").addEventListener("click", async () => {
+  $("fire").disabled = true;
+  await wakeAudio();
+  try { await syncClock(4); } catch (e) {}     // ещё пара замеров прямо перед сигналом
+  try { render(await api("fire")); } catch (e) {}
+  setTimeout(() => { $("fire").disabled = !ready; }, 3500);
+});
+
+function offline(why) {
+  // связь пропала (или устарела сессия): всё важное хранится в боте — метки, таймер, темы; при возврате связи
+  // экран восстановится сам, «Готов» сохраняется, пока страница открыта
+  if (Date.now() - lastOk < 3000 && !why.startsWith("сессия")) return;
+  if (performance.now() > txUntil) show("ОФЛАЙН", false, true);
+  $("note").textContent = why;
+}
+
+// ───────── таймер записи ─────────
+let rec = null;
+const two = (x) => String(x).padStart(2, "0");
+const hms = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${two(Math.floor(s / 3600))}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}`; };
+$("recTicks").innerHTML = Array.from({length: 60}, (_, i) => `<i class="${i % 10 === 9 ? "ten" : ""}"></i>`).join("");
+function tickRec() {
+  const ticks = $("recTicks").children;
+  const st = $("recSt");
+  if (!rec || !rec.start) {
+    $("recN").textContent = rec ? `Запись · №${rec.n}` : "Запись";
+    $("recT").textContent = "--:--:--";
+    st.textContent = "[ ЖДЁТ СИГНАЛА ]"; st.className = "";
+    $("recL").textContent = "Таймер пойдёт с первого сигнала «начало»";
+    for (const t of ticks) t.classList.remove("on", "now");
+    return;
+  }
+  const nowS = nowLocal() + (offset || 0), el = (rec.end || nowS) - rec.start;
+  $("recN").textContent = `Запись · №${rec.n}`;
+  $("recT").textContent = hms(el);
+  st.textContent = rec.end ? "[ ЗАПИСАНО ]" : "[ ИДЁТ ]"; st.className = rec.end ? "" : "hot";
+  const startLocal = new Date(rec.start - (offset || 0)).toLocaleTimeString("ru-RU");
+  $("recL").textContent = rec.end ? `${startLocal} → ${new Date(rec.end - (offset || 0)).toLocaleTimeString("ru-RU")} · по сигналам`
+                                  : `с сигнала «начало» · ${startLocal} · час ${Math.floor(el / 3600000) + 1}`;
+  const m = Math.floor(el / 60000) % 60;
+  for (let i = 0; i < 60; i++) { ticks[i].classList.toggle("on", i < m); ticks[i].classList.toggle("now", i === m && !rec.end); }
+}
+setInterval(tickRec, 250);
+
+// ───────── темы ─────────
+let topics = [], tv = null, people = [], peopleKey = "", tab = "sync", tLoading = false;
+const VOTE = {fire: "ОГОНЬ", ok: "МОЖНО", no: "МИМО"}, SCORE = {fire: 2, ok: 1, no: -1};
+const pname = (uid) => (people.find(p => String(p.id) === String(uid)) || {}).name || "?";
+const score = (t) => Object.values(t.votes).reduce((a, v) => a + (SCORE[v] || 0), 0);
+const needsMe = (t) => me != null && t.status !== "done" && !t.votes[String(me)];
+async function loadTopics() {
+  if (tLoading) return;
+  tLoading = true;
+  try { const j = await api("topics"); topics = j.topics; tv = j.tv; renderTopics(); } catch (e) {} finally { tLoading = false; }
+}
+async function topicOp(op, extra) {
+  try { const j = await api(op, extra); topics = j.topics; tv = j.tv; if (!j.ok && j.error) $("tsum").lastElementChild.textContent = j.error.toUpperCase(); renderTopics(); }
+  catch (e) { $("tsum").lastElementChild.textContent = "НЕТ СВЯЗИ — НЕ СОХРАНЕНО"; }
+}
+function card(t) {
+  const mine = t.votes[String(me)], own = String(t.by) === String(me), done = t.status === "done";
+  const d = new Date(t.at * 1000), date = `${two(d.getDate())}.${two(d.getMonth() + 1)}`;
+  const sc = score(t);
+  const who = people.map(p => { const v = t.votes[String(p.id)]; return `${escHtml(p.name.toUpperCase())} <b class="${v === "fire" ? "hot" : ""}">${v ? VOTE[v] : "—"}</b>`; }).join(" · ");
+  const votes = done ? "" : `<div class="vk3">${Object.entries(VOTE).map(([v, w]) =>
+      `<button class="key sm ${mine === v ? (v === "fire" ? "hot" : "lit") : ""}" data-act="vote" data-v="${v}">${w}</button>`).join("")}</div>`;
+  const acts = done
+    ? `<button class="key sm" data-act="status" data-v="open">Вернуть в список</button>`
+    : `<button class="key sm ${t.status === "next" ? "lit" : ""}" data-act="status" data-v="${t.status === "next" ? "open" : "next"}">${t.status === "next" ? "● в выпуск" : "в выпуск"}</button>` +
+      `<button class="key sm" data-act="status" data-v="done">Обсудили</button>`;
+  return `<div class="topic ${needsMe(t) ? "need" : ""}" data-id="${t.id}">
+    <div class="hd"><span class="tiny">Т-${two(t.id)} · ${escHtml(pname(t.by).toUpperCase())} · ${date}${done ? ` · ОБСУДИЛИ В №${t.n ?? "?"}` : ""}</span>
+      <button class="tag" data-act="kind" title="тема ⇄ заметка">[ ${t.kind === "note" ? "ЗАМЕТКА" : "ТЕМА"} ]</button></div>
+    <div class="tx">${escHtml(t.text)}</div>
+    <div class="who tiny">${who} · РЕЙТИНГ ${sc > 0 ? "+" : ""}${sc}</div>
+    ${votes}
+    <div class="acts">${acts}${own ? `<button class="key sm del" data-act="tdel">Удалить</button>` : ""}</div>
+  </div>`;
+}
+function renderTopics() {
+  const need = topics.filter(needsMe).length;
+  $("tcnt").textContent = need ? ` ·${need}` : "";
+  const open = topics.filter(t => t.status !== "done");
+  $("tsum").firstElementChild.textContent =
+    `ТЕМ ${open.filter(t => t.kind === "topic").length} · ЗАМЕТОК ${open.filter(t => t.kind === "note").length} · ОБСУДИЛИ ${topics.length - open.length}`;
+  $("tsum").lastElementChild.textContent = need ? `ЖДУТ ГОЛОСА · ${need}` : "";
+  const byScore = (a, b) => score(b) - score(a) || b.at - a.at;
+  const secs = [
+    ["В следующий выпуск", topics.filter(t => t.status === "next").sort(byScore)],
+    ["Темы", topics.filter(t => t.status === "open" && t.kind === "topic").sort(byScore)],
+    ["Заметки", topics.filter(t => t.status === "open" && t.kind === "note").sort(byScore)],
+    ["Обсудили", topics.filter(t => t.status === "done").sort((a, b) => (b.n || 0) - (a.n || 0) || b.at - a.at)]];
+  $("tlist").innerHTML = topics.length ? secs.filter(([, l]) => l.length).map(([h, l]) =>
+      `<div class="sec tiny"><span>${h}</span><span>${String(l.length).padStart(2, "0")}</span></div>` + l.map(card).join("")).join("")
+    : `<div class="empty tiny">Пока пусто. Добавляй в боте кнопкой «💡 Тема» — здесь голосуем и разбираем</div>`;
+}
+$("tlist").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("[data-act]"), c = ev.target.closest(".topic");
+  if (!b || !c) return;
+  const id = +c.dataset.id, t = topics.find(x => x.id === id), act = b.dataset.act;
+  if (act === "vote") return topicOp("vote", {id, v: t.votes[String(me)] === b.dataset.v ? null : b.dataset.v});
+  if (act === "kind") return topicOp("kind", {id, kind: t.kind === "note" ? "topic" : "note"});
+  if (act === "status") return topicOp("status", {id, status: b.dataset.v});
+  if (act === "tdel") {
+    const ask = (q) => new Promise(r => (tg && tg.showConfirm ? tg.showConfirm(q, r) : r(confirm(q))));
+    if (await ask(`Удалить тему Т-${two(id)}?`)) topicOp("tdel", {id});
+  }
+});
+function setTab(name) {
+  tab = name;
+  $("vSync").hidden = name !== "sync";
+  $("vTopics").hidden = name !== "topics";
+  for (const b of document.querySelectorAll(".tab")) b.classList.toggle("on", b.dataset.tab === name);
+  try { localStorage.setItem("podsync.tab", name); } catch (e) {}
+  if (name === "topics") { renderTopics(); loadTopics(); }
+  else if (shown[0]) show(...shown);
+}
+for (const b of document.querySelectorAll(".tab")) b.addEventListener("click", () => setTab(b.dataset.tab));
+
+function drawDenied() {
+  const go = () => { dotText($("dden"), "ТОЛЬКО ВЕДУЩИЕ", {pitch: 9, maxWidth: $("dden").parentElement.clientWidth - 4, glow: 3});
+                     dotText($("dden2"), "ОТКРОЙ ИЗ БОТА", {pitch: 2, color: "#9a9a9a", maxWidth: $("dden2").parentElement.clientWidth - 2}); };
+  document.fonts.load(DOT_FONT).then(go, go);
+}
+
+(async () => {
+  let start = qs.get("tab");
+  try { start = start || localStorage.getItem("podsync.tab"); } catch (e) {}
+  if (start === "topics") setTab("topics");
+  try { await document.fonts.load(DOT_FONT); } catch (e) {}
+  show("СВЕРКА…", false, true);
+  showRow("dclk", "ЧАСЫ —"); showRow("dnet", "СЕТЬ —");
+  try { render(await api("ping")); } catch (e) { if (String(e).includes("denied")) return; }   // чужим — «только ведущие»
+  try { await syncClock(); } catch (e) { $("note").textContent = "не получилось сверить часы: " + e; }
+  setInterval(() => { syncClock(4).catch(() => {}); }, 15000);
+  loop();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# в образ копируются только код бота, страница и requirements.txt (пакет podcast-core ставится из репозитория podcast-studio по тегу) — остальное демону Docker не нужно
+*
+!podcast.py
+!bot.py
+!feed.py
+!webapp.html
+!requirements.txt
+**/__pycache__
+**/*.egg-info
