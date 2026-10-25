@@ -781,11 +781,12 @@ def finish_preview(rep):
         save()
 
 
-def finish(rep, quiet=False):
+def finish(rep, quiet=False, note=""):
     """Полный выпуск готов: MP3 (подпись в формате канала) и zip-архив обоим, статус review, заметки о проблемах.
     Вызывается БЕЗ lock: состояние меняется под lock, а загрузка в Telegram (может идти минуты) — без него,
     чтобы бот всё это время отвечал на кнопки и сообщения. Если в выпуске есть вырезы — приписка о них к MP3 и архиву.
-    quiet=True — только эти два сообщения: карточки не переносятся вниз, а правятся на месте (ручная доставка)."""
+    quiet=True — только эти два сообщения: карточки не переносятся вниз, а правятся на месте (ручная доставка);
+    note — строка-приписка к MP3 и архиву (например, что именно изменилось при ручной пересборке)."""
     with lock:
         e = ep()
         job = Path(e["job"])
@@ -820,7 +821,7 @@ def finish(rep, quiet=False):
         save()
         recipients, kb = audience(), reply_kb()
 
-    cn = C.cuts_note(job, cfg_for(str(job)))                 # приписка только в копиях ведущих; в канал уходит чистая подпись
+    cn = ([note] if note else []) + C.cuts_note(job, cfg_for(str(job)))                 # приписка только в копиях ведущих; в канал уходит чистая подпись
     tail = ("\n\n" + "\n".join(cn)) if cn else ""
     caption = rep.get("caption", "")
     if len(caption) + len(tail) > 1024:
