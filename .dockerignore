@@ -3,6 +3,7 @@
 !podcast.py
 !bot.py
 !feed.py
+!cuts.py
 !webapp.html
 !requirements.txt
 **/__pycache__

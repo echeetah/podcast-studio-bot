@@ -43,6 +43,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+import cuts as C
 import feed as F
 import podcast as P
 
@@ -341,12 +342,16 @@ def card(uid):
             L.append(f"📢 в канале: {e['published']['link']}")
         if e.get("notes"):
             L += [""] + [f"<i>{esc(x)}</i>" for x in e["notes"]]
+        cn = C.cuts_note(e["job"], cfg_for(e["job"])) if e.get("job") else []
+        if cn:
+            L += [""] + [esc(x) for x in cn]
         if st == "review":
             L += ["", "<i>Послушай и одобри. Любая правка сбросит одобрения.</i>"]
             mine = e["approvals"].get(str(uid))
             rows.append([btn("↩️ Снять одобрение", "unapprove") if mine else btn("✅ Одобряю", "approve", "success")])
         eq = cfg_for(e.get("job"))["eq"]
         rows += [[btn("✂️ Обрезка", "trim"), btn("📑 Главы", "chap")],
+                 [btn("🪚 Вырезать кусок", "cut")] + ([btn("↩️ Вернуть вырез", "uncut")] if cn else []),
                  [btn(f"🎛 EQ: {'вкл' if eq else 'выкл'}", "eq"), btn("🔁 Пересобрать", "rerender")]]
     elif st == "failed":
         L += [f"😢 <b>{PODCAST} №{n}</b> · сборка упала", "", f"<code>{esc(e.get('error', '')[-500:])}</code>"]
@@ -762,10 +767,11 @@ def finish_preview(rep):
         save()
 
 
-def finish(rep):
+def finish(rep, quiet=False):
     """Полный выпуск готов: MP3 (подпись в формате канала) и zip-архив обоим, статус review, заметки о проблемах.
     Вызывается БЕЗ lock: состояние меняется под lock, а загрузка в Telegram (может идти минуты) — без него,
-    чтобы бот всё это время отвечал на кнопки и сообщения."""
+    чтобы бот всё это время отвечал на кнопки и сообщения. Если в выпуске есть вырезы — приписка о них к MP3 и архиву.
+    quiet=True — только эти два сообщения: карточки не переносятся вниз, а правятся на месте (ручная доставка)."""
     with lock:
         e = ep()
         job = Path(e["job"])
@@ -800,9 +806,12 @@ def finish(rep):
         save()
         recipients, kb = audience(), reply_kb()
 
+    cn = C.cuts_note(job, cfg_for(str(job)))                 # приписка только в копиях ведущих; в канал уходит чистая подпись
+    tail = ("\n\n" + "\n".join(cn)) if cn else ""
     caption = rep.get("caption", "")
-    if len(caption) > 1024:
-        caption = caption[:1020] + "…"
+    if len(caption) + len(tail) > 1024:
+        caption = caption[: 1020 - len(tail)] + "…"
+    caption += tail
     zp = job / f"{Path(rep['file']).stem}.zip"
     with zipfile.ZipFile(zp, "w") as z:
         for f in sorted(out.iterdir()):
@@ -828,7 +837,7 @@ def finish(rep):
                 with lock:
                     if ep() and ep().get("job") == str(job):
                         ep()["audio_id"] = audio_id       # для публикации в канал без повторной загрузки
-            cap = "📦 Архив: MP3, описание, главы, расшифровка, субтитры"
+            cap = "📦 Архив: MP3, описание, главы, расшифровка, субтитры" + (("\n" + "\n".join(cn)) if cn else "")
             if doc_id:
                 tg("sendDocument", chat_id=uid, document=doc_id, caption=cap, reply_markup=kb)
             else:
@@ -840,8 +849,11 @@ def finish(rep):
             log(f"доставка {name(uid)}: {ex}")
     zp.unlink(missing_ok=True)
     with lock:
-        for uid in audience():
-            new_card(uid)
+        if quiet:
+            flush_cards(force=True)
+        else:
+            for uid in audience():
+                new_card(uid)
         save()
 
 
@@ -939,6 +951,23 @@ def on_message(m, uid):
         begin_processing("preview")
         return
 
+    if aw and aw["kind"] == "cut" and text and not text.startswith("/") and text[:1] not in "➕🎙⚙👂😢🎧💡":
+        S["await"].pop(str(uid))
+        e = ep()
+        if not e or e["status"] not in ("review", "approved") or e["n"] != aw["n"]:
+            send(chat, "Этот выпуск уже не на проверке.")
+            return
+        try:
+            a, b, note = C.parse_range(text)
+            cut = C.add_cut(e["job"], cfg_for(e["job"]), a, b, note)
+        except Exception as ex:  # noqa: BLE001
+            send(chat, f"Не получилось: {esc(ex)}. Нажми «🪚 Вырезать кусок» ещё раз.")
+            return
+        event(f"✂️ {name(uid)}: вырезаю {cut['label']} ({int(round(cut['to'] - cut['from']))} с)"
+              + (f" — {esc(note)}" if note else "") + " — пересобираю, одобрения сброшены", silent=True)
+        begin_processing("render")
+        return
+
     if aw and aw["kind"] in ("trim", "chapters") and text and not text.startswith("/") and text[:1] not in "➕🎙⚙👂😢🎧💡":
         S["await"].pop(str(uid))
         e = ep()
@@ -952,12 +981,12 @@ def on_message(m, uid):
                     raise ValueError("нужно одно или два времени")
                 st = None if parts[0] == "-" else parts[0]
                 en = parts[1] if len(parts) == 2 and parts[1] != "-" else None
-                P.apply_edits(e["job"], start=st, end=en)
+                C.apply_edits(e["job"], start=st, end=en)
                 what = f"обрезка {text}"
             else:
                 if not re.search(r"\d{1,2}:\d{2}", text):
                     raise ValueError("не нашёл строк вида «12:34 название»")
-                P.apply_edits(e["job"], chapters_text=text)
+                C.apply_edits(e["job"], chapters_text=text)
                 what = "новые главы"
         except Exception as ex:  # noqa: BLE001
             send(chat, f"Не понял: {esc(ex)}. Нажми кнопку ещё раз.")
@@ -1125,6 +1154,26 @@ def on_callback(q, uid):
             cur = Path(e["job"]) / "out" / "chapters.txt"
             send(chat, "Скопируй, поправь и пришли обратно (время — по готовому MP3):\n\n"
                        f"<code>{esc(cur.read_text().strip() if cur.exists() else '00:00 начало')}</code>")
+    elif data == "cut" and e["status"] in ("review", "approved"):
+        S["await"][str(uid)] = {"kind": "cut", "n": e["n"]}
+        plan = P.jload(Path(e["job"]) / "plan.json")
+        cfg = cfg_for(e["job"])
+        t_main, segs = C.intro_offset(cfg), C.pieces(plan)
+        hints = [f"• {C.fmt(t_main + P.to_edit(segs, t))} — {esc(txt)}"
+                 for t, txt in C.glitches(e["job"], P.jload(Path(e["job"]) / "meta.json")["names"],
+                                          P.parse_ts(plan["start"]), P.parse_ts(plan["end"]))]
+        send(chat, "Пришли, какой кусок вырезать, <b>по времени готового MP3</b> (как в таймкодах поста):\n"
+                   "<code>55:39-56:09</code> или <code>55:39-56:09 сбой связи</code> — слова после времён станут пометкой\n"
+                   "Края я сам сдвину в ближайшие паузы, а стык сделаю плавным; главы и расшифровка сдвинутся."
+                   + (f"\n\n🔎 <b>Возможные места:</b>\n" + "\n".join(hints) if hints else "")
+                   + f"\n\nСейчас выпуск длится {P.fmt_ts(e['report']['duration'])}.")
+    elif data == "uncut" and e["status"] in ("review", "approved"):
+        gone = C.remove_last_cut(e["job"])
+        if gone:
+            event(f"↩️ {name(uid)}: вырез {gone.get('label', '')} возвращён — пересобираю, одобрения сброшены", silent=True)
+            begin_processing("render")
+        else:
+            ans = "Вырезов нет"
     elif data in ("eq", "rerender") and e["status"] in ("review", "approved"):
         what = "пересборка"
         if data == "eq":
@@ -1687,10 +1736,12 @@ def main():
     tg("setMyCommands", commands=[{"command": c, "description": d} for c, d in COMMANDS])
     # «🔔 Синхро» — кнопка меню бота (слева от поля ввода): только так мини-приложение получает подпись initData,
     # из кнопки нижней клавиатуры Telegram открывает его без подписи
+    # Кнопка ставится только в чатах ведущих; по умолчанию (для всех остальных, кто нашёл бота) — обычное меню команд,
+    # чтобы чужие не видели и не открывали мини-приложение.
+    safe("setChatMenuButton", menu_button={"type": "commands"})
     if WEBAPP_URL:
-        safe("setChatMenuButton", menu_button={"type": "web_app", "text": "🔔 Синхро", "web_app": {"url": WEBAPP_URL}})
-    else:
-        safe("setChatMenuButton", menu_button={"type": "commands"})
+        for u in ORDER:
+            safe("setChatMenuButton", chat_id=u, menu_button={"type": "web_app", "text": "🔔 Синхро", "web_app": {"url": WEBAPP_URL}})
     with lock:
         e = ep()
         if e and e["status"] == "processing":
