@@ -26,6 +26,7 @@ getFile отдаёт абсолютный путь в общем томе /var/l
 import hashlib
 import hmac
 import json
+import math
 import os
 import queue
 import re
@@ -93,7 +94,8 @@ STAGES = [("sync", "синхронизация"), ("transcribe", "расшифр
 LABEL = dict(STAGES)
 MODE_KEYS = {"run": ["sync", "transcribe", "plan", "preview"], "preview": ["preview"], "render": ["clean", "mix", "final"]}
 RATIOS = [1.5, 2, 3, 4, 6]                                # ступени компрессора для «мягче / жёстче»
-NR_STEPS = [0, 6, 8, 12]                                  # сила шумодава, дБ (0 — выключен)
+NR_STEPS = [0, 6, 8, 12]                                  # сила шумодава, дБ (0 — выключен); без нейромодели
+
 PUBLISH_CHAT = os.environ.get("PUBLISH_CHAT", "")         # канал для публикации после одобрения обоих (@имя или -100…)
 FEED_URL = os.environ.get("FEED_URL", "")                 # публичный адрес RSS-фида (без feed.xml); пусто — фида нет
 # ожидаемая длительность этапа, минут на час записи (замерено на Pi 5) — для ETA
@@ -248,6 +250,18 @@ def tracks_ready(e):
     return all(str(u) in e["tracks"] and e["tracks"][str(u)].get("ok") for u in ORDER)
 
 
+def nn_denoise(cfg):
+    """Задана ли нейросетевая модель шумодава (RNNoise, настройка rnnoise_model): тогда шумодав — «нейро / выкл», без градаций."""
+    return bool(cfg.get("rnnoise_model") and Path(cfg["rnnoise_model"]).is_file())
+
+
+def noise_label(cfg):
+    """Как назвать шумодав в карточке: «нейро», «12 дБ» или «выкл»."""
+    if not cfg["denoise"]:
+        return "выкл"
+    return "нейро" if nn_denoise(cfg) else (f"{cfg['denoise_nr']} дБ" if cfg["denoise_nr"] > 0 else "выкл")
+
+
 def card(uid):
     """Текст и inline-кнопки живой карточки выпуска для ведущего uid (в его часовом поясе).
     Одна функция на все состояния: waiting/grace → processing → preview → review/approved, failed, cancelled.
@@ -313,9 +327,9 @@ def card(uid):
         profs = profiles_of(cfg)
         eq_txt = ("EQ: " + ", ".join(f"{name(u)} — {profs[i] or 'без профиля'}" for i, u in enumerate(ORDER))
                   if cfg["eq"] and cfg.get("mic_profiles") and len(cfg["mic_profiles"]) > 1 else f"EQ {'вкл' if cfg['eq'] else 'выкл'}")
-        nr = cfg["denoise_nr"] if cfg["denoise"] else 0
+        nz = noise_label(cfg)
         L += ["", f"компрессор {cfg['comp_ratio']:g}:1 · {eq_txt} · {bname} {'+' if bd > 0 else ''}{bd} мс",
-              f"шумодав {nr or 'выкл'}{' дБ' if nr else ''} · де-эссер {'вкл' if cfg['deesser'] else 'выкл'}"
+              f"шумодав {nz} · де-эссер {'вкл' if cfg['deesser'] else 'выкл'}"
               f" · выравнивание {'вкл' if cfg['dynaudnorm'] else 'выкл'}",
               "", "<i>Послушай превью выше: синхронизация, громкость, эффекты. Всё ок — соберу полный выпуск (~8 мин). "
                   "Правки пересоберут только превью.</i>"]
@@ -326,7 +340,7 @@ def card(uid):
                 [btn(f"⏪ {bname} −100 мс", "bm"), btn(f"⏩ {bname} +100 мс", "bp")]]
         if cfg["eq"] and len(cfg.get("mic_profiles") or {}) > 1:
             rows.append([btn(f"🎙 {name(u)}: {profs[i] or '—'}", f"prof:{i}") for i, u in enumerate(ORDER)])
-        rows.append([btn(f"🔇 Шумодав {nr or 'выкл'}", "nr"), btn(f"〰 Де-эссер {'вкл' if cfg['deesser'] else 'выкл'}", "dees"),
+        rows.append([btn(f"🔇 Шумодав {nz}", "nr"), btn(f"〰 Де-эссер {'вкл' if cfg['deesser'] else 'выкл'}", "dees"),
                      btn(f"📈 Выравн. {'вкл' if cfg['dynaudnorm'] else 'выкл'}", "dyn")])
     elif st in ("review", "approved"):
         r = e["report"]
@@ -753,7 +767,7 @@ def finish_preview(rep):
                 try:
                     r = tg("sendAudio", files=files, _t=600, chat_id=uid,
                            caption="\n".join(lines), parse_mode="HTML", title=f"превью №{rep['n']}",
-                           performer=" и ".join(name(u) for u in ORDER), duration=int(rep["duration"]),
+                           performer=" и ".join(name(u) for u in ORDER), duration=math.ceil(rep["duration"]),
                            reply_markup=kb)
                 finally:
                     for f in files.values():
@@ -829,7 +843,7 @@ def finish(rep, quiet=False):
                 try:
                     r = tg("sendAudio", files=files, _t=1800, chat_id=uid, caption=caption,
                            title=f"#{rep['n']}: {rep['title']}" if rep.get("n") else rep["title"],
-                           performer=" и ".join(meta["names"]), duration=int(rep["duration"]))
+                           performer=" и ".join(meta["names"]), duration=math.ceil(rep["duration"]))
                 finally:
                     for f in files.values():
                         f[1].close()
@@ -1113,6 +1127,9 @@ def on_callback(q, uid):
                 profs[i] = names[(names.index(cur) + 1) % len(names)]
                 st["track_profile"] = profs
                 what = f"профиль {name(ORDER[i])} — {profs[i]}"
+            elif data == "nr" and nn_denoise(cfg):
+                st["denoise"] = not cfg["denoise"]
+                what = f"шумодав {'нейро' if st['denoise'] else 'выкл'}"
             elif data == "nr":
                 cur = cfg["denoise_nr"] if cfg["denoise"] else 0
                 nxt = NR_STEPS[(NR_STEPS.index(cur) + 1) % len(NR_STEPS)] if cur in NR_STEPS else 0

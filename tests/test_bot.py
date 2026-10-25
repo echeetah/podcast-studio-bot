@@ -86,3 +86,16 @@ def test_rec_payload(tmp_path, monkeypatch):
     r = B.rec_payload(32)
     assert r == {"n": 32, "start": 1000000.0, "end": 4900000.0}
     assert B.rec_payload(33)["start"] is None
+
+
+def test_noise_label_and_toggle(tmp_path):
+    model = tmp_path / "bd.rnnn"
+    model.write_text("rnnoise-nu model file version 1\n")
+    base = {"denoise": True, "denoise_nr": 12, "rnnoise_model": ""}
+    assert B.noise_label(base) == "12 дБ" and not B.nn_denoise(base)
+    assert B.noise_label({**base, "denoise": False}) == "выкл"
+    assert B.noise_label({**base, "denoise_nr": 0}) == "выкл"
+    nn = {**base, "rnnoise_model": str(model)}
+    assert B.nn_denoise(nn) and B.noise_label(nn) == "нейро"
+    assert B.noise_label({**nn, "denoise": False}) == "выкл"
+    assert not B.nn_denoise({**base, "rnnoise_model": str(tmp_path / "нет.rnnn")})     # файла нет — обычный шумодав
